@@ -1,5 +1,4 @@
 'use client';
-
 import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -9,7 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { Plus, X, ArrowLeft, Search, Bot, Loader2, Save } from 'lucide-react';
+import { Plus, X, ArrowLeft, Search, Bot, Loader2, Save, Sparkles } from 'lucide-react';
 import { useAuth, withAuth } from '../../AuthContext';
 
 // API Base URL (環境に応じて変更してください)
@@ -95,7 +94,8 @@ function EditMeetingPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+  const [isGeneratingTags, setIsGeneratingTags] = useState(false); // タグ生成専用
+  const [isGeneratingAI, setIsGeneratingAI] = useState(false); // AI推薦専用
   const [generatedTags, setGeneratedTags] = useState<string[]>([]);
   const [recommendedUsers, setRecommendedUsers] = useState<RecommendedUser[]>([]);
   const [isRecommendModalOpen, setIsRecommendModalOpen] = useState(false);
@@ -314,6 +314,19 @@ function EditMeetingPage() {
     }));
   };
 
+  // タグの追加・削除・更新
+  const addTag = () => {
+    setGeneratedTags(prev => [...prev, '']);
+  };
+
+  const removeTag = (index: number) => {
+    setGeneratedTags(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const updateTag = (index: number, value: string) => {
+    setGeneratedTags(prev => prev.map((tag, i) => i === index ? value : tag));
+  };
+
   // 参加者の削除
   const removeParticipant = (index: number) => {
     setFormData(prev => ({
@@ -371,25 +384,63 @@ function EditMeetingPage() {
     setSearchResults([]);
   };
 
-  // AI推薦機能
-  const handleAIRecommendation = async () => {
+  // タグ生成機能（新規追加）
+  const handleTagGeneration = async () => {
     const topicsText = formData.topics.filter(t => t.trim()).join(' ');
     if (!topicsText) {
       alert('トピックを入力してください');
       return;
     }
 
-    setIsGeneratingAI(true);
+    setIsGeneratingTags(true);
     try {
-      // 1. タグ生成
       const tagResponse = await fetch(`${API_BASE_URL}/tag_generate?topic=${encodeURIComponent(topicsText)}`);
       if (!tagResponse.ok) throw new Error('タグ生成に失敗しました');
       
       const tagData = await tagResponse.json();
       setGeneratedTags(tagData.tags);
 
-      // 2. おすすめ参加者取得
-      const tagString = tagData.tags.join(' ');
+    } catch (error) {
+      console.error('タグ生成エラー:', error);
+      alert('タグ生成に失敗しました');
+    } finally {
+      setIsGeneratingTags(false);
+    }
+  };
+
+  // AI推薦機能（既存の機能、タグ生成から分離）
+  const handleAIRecommendation = async () => {
+    // 既にタグが生成されている場合はそれを使用、なければ生成
+    let tagsToUse = generatedTags;
+    
+    if (tagsToUse.length === 0) {
+      const topicsText = formData.topics.filter(t => t.trim()).join(' ');
+      if (!topicsText) {
+        alert('トピックを入力してください');
+        return;
+      }
+
+      setIsGeneratingAI(true);
+      try {
+        // タグ生成
+        const tagResponse = await fetch(`${API_BASE_URL}/tag_generate?topic=${encodeURIComponent(topicsText)}`);
+        if (!tagResponse.ok) throw new Error('タグ生成に失敗しました');
+        
+        const tagData = await tagResponse.json();
+        tagsToUse = tagData.tags;
+        setGeneratedTags(tagData.tags);
+      } catch (error) {
+        console.error('AI推薦用タグ生成エラー:', error);
+        alert('AI推薦に失敗しました');
+        setIsGeneratingAI(false);
+        return;
+      }
+    }
+
+    setIsGeneratingAI(true);
+    try {
+      // おすすめ参加者取得
+      const tagString = tagsToUse.join(' ');
       const recommendResponse = await fetch(
         `${API_BASE_URL}/recommend?tag=${encodeURIComponent(tagString)}&top_k=10`
       );
@@ -497,14 +548,15 @@ function EditMeetingPage() {
       }
 
       // ステップ4: タグ登録（生成済みタグがある場合）
-      if (generatedTags.length > 0) {
+      const tagsFiltered = generatedTags.filter(tag => tag.trim());
+      if (tagsFiltered.length > 0) {
         console.log('タグを登録中...');
         const tagsResponse = await fetch(`${API_BASE_URL}/tags_register_batch`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             meeting_id: newMeetingId,
-            tags: generatedTags
+            tags: tagsFiltered
           })
         });
 
@@ -821,17 +873,74 @@ function EditMeetingPage() {
                   )}
                 </div>
               ))}
-              <Button
-                type="button"
-                variant="outline"
-                onClick={addTopic}
-                className="w-full"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                追加
-              </Button>
+              <div className="flex space-x-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addTopic}
+                  className="flex-1"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  追加
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleTagGeneration}
+                  disabled={isGeneratingTags}
+                  className="flex-1 bg-blue-50 hover:bg-blue-100 border-blue-200"
+                >
+                  {isGeneratingTags ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4 mr-2" />
+                  )}
+                  タグ生成
+                </Button>
+              </div>
             </CardContent>
           </Card>
+
+          {/* タグ欄（新規追加） */}
+          {generatedTags.length > 0 && (
+            <Card className="bg-white border border-gray-200">
+              <CardHeader>
+                <CardTitle className="text-lg font-semibold text-gray-900">タグ</CardTitle>
+                <p className="text-sm text-gray-600">生成されたタグを確認・編集してください</p>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {generatedTags.map((tag, index) => (
+                    <div key={index} className="flex items-center space-x-2">
+                      <Input
+                        value={tag}
+                        onChange={(e) => updateTag(index, e.target.value)}
+                        placeholder="タグを入力してください"
+                        className="flex-1"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => removeTag(index)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addTag}
+                  className="w-full"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  タグを追加
+                </Button>
+              </CardContent>
+            </Card>
+          )}
 
           {/* 参加者 */}
           <Card className="bg-white border border-gray-200">
@@ -907,20 +1016,6 @@ function EditMeetingPage() {
                   ))}
                 </div>
               )}
-
-              {/* 生成されたタグ表示 */}
-              {generatedTags.length > 0 && (
-                <div className="mt-4 p-3 bg-blue-50 rounded">
-                  <Label className="text-sm font-medium text-gray-700">生成されたタグ</Label>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {generatedTags.map((tag, index) => (
-                      <span key={index} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm">
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
             </CardContent>
           </Card>
         </div>
@@ -972,7 +1067,7 @@ function EditMeetingPage() {
 
       {/* 氏名検索モーダル */}
       <Dialog open={isSearchModalOpen} onOpenChange={setIsSearchModalOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50">
           <DialogHeader>
             <DialogTitle>参加者を検索</DialogTitle>
             <DialogDescription>
@@ -1045,7 +1140,7 @@ function EditMeetingPage() {
 
       {/* AI推薦結果モーダル */}
       <Dialog open={isRecommendModalOpen} onOpenChange={setIsRecommendModalOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50">
           <DialogHeader>
             <DialogTitle>AI推薦による参加者候補</DialogTitle>
             <DialogDescription>
