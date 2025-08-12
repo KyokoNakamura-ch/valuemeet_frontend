@@ -46,3 +46,4 @@ next-env.d.ts
 *.test.js
 *.spec.js
 
+app.zip
