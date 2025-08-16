@@ -11,6 +11,12 @@
 # next.js
 /.next/
 /out/
+.next/
+out/
+dist/
+.vercel/
+.turbo/
+*.tsbuildinfo
 
 # production
 /build
@@ -34,3 +40,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+
+*.map
+*.test.js
+*.spec.js
+
+app.zip
+app.zip
