@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { Plus, X, ArrowLeft, Search, Bot, Loader2, Save, Sparkles } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Plus, X, ArrowLeft, Search, Bot, Loader2, Save, Sparkles, AlertTriangle } from 'lucide-react';
 import { useAuth, withAuth } from '../../AuthContext';
 
 // API Base URL (環境に応じて変更してください)
@@ -52,6 +53,12 @@ interface Meeting {
   participants?: Participant[];
 }
 
+// 会議招集ルールチェック
+interface RuleViolation {
+  rule: string;
+  message: string;
+}
+
 // 時間選択のオプションを生成（8:00-18:00、15分間隔）
 const generateTimeOptions = () => {
   const options = [];
@@ -67,6 +74,74 @@ const generateTimeOptions = () => {
 };
 
 const timeOptions = generateTimeOptions();
+
+// 会議コスト計算関数
+const calculateMeetingCost = (participantCount: number, startTime: string, endTime: string): number => {
+  if (!startTime || !endTime || participantCount === 0) return 0;
+  
+  const start = new Date(`2000-01-01T${startTime}:00`);
+  const end = new Date(`2000-01-01T${endTime}:00`);
+  const durationHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+  
+  if (durationHours <= 0) return 0;
+  
+  return participantCount * 5000 * durationHours;
+};
+
+// 会議招集ルールチェック関数
+const checkMeetingRules = (meetingType: string, participants: Participant[]): RuleViolation[] => {
+  const violations: RuleViolation[] = [];
+  
+  // 役割別の参加者数をカウント
+  const roleCounts = {
+    '会議主催者': 0,
+    '実行責任者': 0,
+    '説明責任者': 0,
+    '有識相談者': 0,
+    '報告先': 0
+  };
+  
+  participants.forEach(p => {
+    if (roleCounts.hasOwnProperty(p.role)) {
+      roleCounts[p.role as keyof typeof roleCounts]++;
+    }
+  });
+  
+  // ルール1: 課題解決会議では有識相談者が参加していること
+  if (meetingType === '課題解決会議' && roleCounts['有識相談者'] === 0) {
+    violations.push({
+      rule: '課題解決会議ルール',
+      message: '課題解決会議では「有識相談者」が参加している必要があります。'
+    });
+  }
+  
+  // ルール2: 意思決定会議、課題解決会議、企画構想型会議では実行責任者が参加していること
+  const requiresExecutive = ['意思決定会議', '課題解決会議', '企画構想型会議'];
+  if (requiresExecutive.includes(meetingType) && roleCounts['実行責任者'] === 0) {
+    violations.push({
+      rule: '実行責任者ルール',
+      message: `${meetingType}では「実行責任者」が参加している必要があります。`
+    });
+  }
+  
+  // ルール3: 全ての会議において報告先は3人まで
+  if (roleCounts['報告先'] > 3) {
+    violations.push({
+      rule: '報告先人数ルール',
+      message: '「報告先」は3人までに制限されています。'
+    });
+  }
+  
+  // ルール4: 全ての会議において説明責任者は1人
+  if (roleCounts['説明責任者'] !== 1) {
+    violations.push({
+      rule: '説明責任者ルール',
+      message: '「説明責任者」は必ず1人である必要があります。'
+    });
+  }
+  
+  return violations;
+};
 
 function EditMeetingPage() {
   const router = useRouter();
@@ -100,6 +175,11 @@ function EditMeetingPage() {
   const [recommendedUsers, setRecommendedUsers] = useState<RecommendedUser[]>([]);
   const [isRecommendModalOpen, setIsRecommendModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // 招集ルールチェック関連の状態
+  const [ruleViolations, setRuleViolations] = useState<RuleViolation[]>([]);
+  const [isRuleWarningOpen, setIsRuleWarningOpen] = useState(false);
+  const [ignoreRules, setIgnoreRules] = useState(false);
 
   // ユーザー情報がない場合のローディング表示
   if (!user) {
@@ -239,7 +319,7 @@ function EditMeetingPage() {
     }
   };
 
-  // 参加者情報の取得
+  // 参加者情報の取得（役割マッピング修正版）
   const fetchMeetingParticipants = async (id: number) => {
     try {
       console.log(`参加者を取得中: ${id}`);
@@ -247,14 +327,32 @@ function EditMeetingPage() {
       if (response.ok) {
         const participantsData = await response.json();
         
-        // 参加者データを整形
-        const participants = participantsData.map((p: any) => ({
-          user_id: p.user_id,
-          name: p.name,
-          organization_name: p.organization_name || '',
-          role: p.role_type || 'participant',
-          email: p.email
-        }));
+        // 参加者データを整形（新しい役割体系にマッピング）
+        const participants = participantsData.map((p: any) => {
+          // 古い役割を新しい役割にマッピング
+          let mappedRole = '会議主催者';
+          switch (p.role_type) {
+            case 'host': mappedRole = '会議主催者'; break;
+            case 'presenter': mappedRole = '説明責任者'; break;
+            case 'participant': mappedRole = '有識相談者'; break;
+            case 'observer': mappedRole = '報告先'; break;
+            case '会議主催者':
+            case '実行責任者':
+            case '説明責任者':
+            case '有識相談者':
+            case '報告先':
+              mappedRole = p.role_type; break;
+            default: mappedRole = '会議主催者';
+          }
+          
+          return {
+            user_id: p.user_id,
+            name: p.name,
+            organization_name: p.organization_name || '',
+            role: mappedRole,
+            email: p.email
+          };
+        });
 
         setFormData(prev => ({
           ...prev,
@@ -374,7 +472,7 @@ function EditMeetingPage() {
           user_id: user.user_id,
           name: user.name,
           organization_name: user.organization_name,
-          role: 'participant',
+          role: '会議主催者', // デフォルト役割を更新
           email: user.email
         }]
       }));
@@ -462,24 +560,60 @@ function EditMeetingPage() {
   const addParticipantFromRecommendation = (user: RecommendedUser) => {
     const exists = formData.participants.some(p => p.user_id === user.user_id);
     if (!exists) {
+      // 過去の役割を新しい役割体系にマッピング
+      let mappedRole = '会議主催者';
+      if (user.past_role) {
+        switch (user.past_role) {
+          case 'host': mappedRole = '会議主催者'; break;
+          case 'presenter': mappedRole = '説明責任者'; break;
+          case 'participant': mappedRole = '有識相談者'; break;
+          case 'observer': mappedRole = '報告先'; break;
+          case '会議主催者':
+          case '実行責任者':
+          case '説明責任者':
+          case '有識相談者':
+          case '報告先':
+            mappedRole = user.past_role; break;
+          default: mappedRole = '会議主催者';
+        }
+      }
+      
       setFormData(prev => ({
         ...prev,
         participants: [...prev.participants, {
           user_id: user.user_id,
           name: user.name,
           organization_name: user.organization_name,
-          role: user.past_role || 'participant'
+          role: mappedRole
         }]
       }));
     }
   };
 
-  // 会議更新・一時保存の共通処理（削除→再作成）
+  // 会議コストの計算
+  const getMeetingCost = () => {
+    if (!formData.startTime || !formData.endTime || formData.participants.length === 0) {
+      return 0;
+    }
+    return calculateMeetingCost(formData.participants.length + 1, formData.startTime, formData.endTime); // +1は作成者
+  };
+
+  // 会議更新・一時保存の共通処理（削除→再作成）（ルールチェック追加）
   const submitMeeting = async (isDraft: boolean = false) => {
     // バリデーション
     if (!formData.title || !formData.date || !formData.startTime) {
       alert('必須項目を入力してください');
       return;
+    }
+
+    // 招集ルールチェック（下書きでない場合のみ）
+    if (!isDraft && formData.type && formData.participants.length > 0) {
+      const violations = checkMeetingRules(formData.type, formData.participants);
+      if (violations.length > 0 && !ignoreRules) {
+        setRuleViolations(violations);
+        setIsRuleWarningOpen(true);
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -514,7 +648,8 @@ function EditMeetingPage() {
           date_time: dateTime,
           end_time: formData.endTime, 
           created_by: currentUserId,
-          status: isDraft ? 'draft' : 'scheduled'
+          status: isDraft ? 'draft' : 'scheduled',
+          rule_violation: !isDraft && ruleViolations.length > 0 && ignoreRules // ルール違反フラグ
         })
       });
 
@@ -610,6 +745,7 @@ function EditMeetingPage() {
       }
     } finally {
       setIsSubmitting(false);
+      setIgnoreRules(false); // リセット
     }
   };
 
@@ -618,6 +754,13 @@ function EditMeetingPage() {
 
   // 一時保存
   const handleSaveDraft = () => submitMeeting(true);
+
+  // ルール違反警告での「理解の上更新」
+  const handleAcceptRules = () => {
+    setIgnoreRules(true);
+    setIsRuleWarningOpen(false);
+    submitMeeting(false);
+  };
 
   const handleCancel = () => {
     router.back();
@@ -657,6 +800,19 @@ function EditMeetingPage() {
             )}
           </div>
         </div>
+
+        {/* 会議コスト表示 */}
+        {getMeetingCost() > 0 && (
+          <Alert className="mb-6 border-red-200 bg-red-50">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription className="text-red-700 font-semibold">
+              予想会議コスト: ¥{getMeetingCost().toLocaleString()}
+              （参加者{formData.participants.length + 1}名 × ¥5,000 × {formData.startTime && formData.endTime ? 
+                Math.round(((new Date(`2000-01-01T${formData.endTime}:00`).getTime() - 
+                new Date(`2000-01-01T${formData.startTime}:00`).getTime()) / (1000 * 60 * 60)) * 10) / 10 : 0}時間）
+            </AlertDescription>
+          </Alert>
+        )}
 
         <div className="space-y-6">
           {/* 基本情報 */}
@@ -702,8 +858,8 @@ function EditMeetingPage() {
                       <SelectItem value="意思決定会議">意思決定会議</SelectItem>
                       <SelectItem value="情報共有型会議">情報共有型会議</SelectItem>
                       <SelectItem value="課題解決会議">課題解決会議</SelectItem>
-                      <SelectItem value="企画想造型会議">企画想造型会議</SelectItem>
-                      <SelectItem value="育成評価会議">育成評価会議</SelectItem>
+                      <SelectItem value="企画構想型会議">企画構想型会議</SelectItem>
+                      <SelectItem value="育成評価型会議">育成評価型会議</SelectItem>
                       <SelectItem value="その他">その他</SelectItem>
                     </SelectContent>
                   </Select>
@@ -998,10 +1154,11 @@ function EditMeetingPage() {
                           align="start"
                           className="w-[var(--radix-select-trigger-width)] bg-white border border-gray-200"
                         >
-                          <SelectItem value="host">主催者</SelectItem>
-                          <SelectItem value="presenter">発表者</SelectItem>
-                          <SelectItem value="participant">参加者</SelectItem>
-                          <SelectItem value="observer">オブザーバー</SelectItem>
+                          <SelectItem value="会議主催者">会議主催者</SelectItem>
+                          <SelectItem value="実行責任者">実行責任者</SelectItem>
+                          <SelectItem value="説明責任者">説明責任者</SelectItem>
+                          <SelectItem value="有識相談者">有識相談者</SelectItem>
+                          <SelectItem value="報告先">報告先</SelectItem>
                         </SelectContent>
                       </Select>
                       <Button
@@ -1064,6 +1221,45 @@ function EditMeetingPage() {
           </Button>
         </div>
       </div>
+
+      {/* 招集ルール違反警告モーダル */}
+      <Dialog open={isRuleWarningOpen} onOpenChange={setIsRuleWarningOpen}>
+        <DialogContent className="max-w-md fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-50">
+          <DialogHeader>
+            <DialogTitle className="flex items-center">
+              <AlertTriangle className="h-5 w-5 text-red-600 mr-2" />
+              招集ルール違反
+            </DialogTitle>
+            <DialogDescription>
+              以下の招集ルールに違反しています。理解の上で更新を継続しますか？
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <div className="space-y-3">
+              {ruleViolations.map((violation, index) => (
+                <div key={index} className="bg-red-50 border border-red-200 p-3 rounded">
+                  <div className="font-medium text-red-800">{violation.rule}</div>
+                  <div className="text-sm text-red-600 mt-1">{violation.message}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex justify-end space-x-2">
+            <Button
+              variant="outline"
+              onClick={() => setIsRuleWarningOpen(false)}
+            >
+              キャンセル
+            </Button>
+            <Button
+              onClick={handleAcceptRules}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              理解の上更新
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 氏名検索モーダル */}
       <Dialog open={isSearchModalOpen} onOpenChange={setIsSearchModalOpen}>

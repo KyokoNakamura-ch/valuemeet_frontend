@@ -1,12 +1,12 @@
 // app/meeting-management/page.tsx
 'use client';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useRouter } from 'next/navigation';
-import { Search, Filter, Plus, Calendar, Users, Clock, User, Edit, Eye, Trash2, ChevronLeft, ChevronRight, FilterX, ChevronDown, Target, Tag, Monitor } from 'lucide-react';
+import { Search, Filter, Plus, Calendar, Users, Clock, User, Edit, Eye, Trash2, ChevronLeft, ChevronRight, FilterX, ChevronDown, Target, Tag, Monitor, AlertTriangle } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { useAuth, withAuth } from '../../AuthContext';
 
@@ -16,6 +16,7 @@ interface Meeting {
   title: string;
   date: string;
   time: string;
+  endTime?: string;
   participants: number;
   status: 'scheduled' | 'draft' | 'completed';
   agenda: string[];
@@ -25,6 +26,7 @@ interface Meeting {
   meetingMode?: string;
   purpose?: string;
   createdBy?: string;
+  ruleViolation?: boolean;
 }
 
 interface DepartmentMember {
@@ -37,6 +39,7 @@ interface ApiMeetingItem {
   meeting_id: number;
   title: string;
   date_time: string;
+  end_time?: string;
   participants?: number;
   status?: string;
   meeting_mode: string;
@@ -46,6 +49,15 @@ interface ApiMeetingItem {
   name?: string;
   organization_name?: string;
   created_by?: string;
+  rule_violation?: boolean;
+}
+
+// データキャッシュ用の型
+interface CachedData {
+  myMeetings: Meeting[];
+  departmentMeetings: Meeting[];
+  departmentMembers: DepartmentMember[];
+  lastFetched: Date;
 }
 
 // APIエンドポイントを定義
@@ -57,9 +69,21 @@ type PeriodType = 'day' | 'week' | 'month';
 // フィルタータイプ
 type FilterType = 'my' | 'department' | 'member';
 
-// ユーティリティ関数（修正版）
+// 会議コスト計算関数
+const calculateMeetingCost = (participantCount: number, startTime: string, endTime: string): number => {
+  if (!startTime || !endTime || participantCount === 0) return 0;
+  
+  const start = new Date(`2000-01-01T${startTime}:00`);
+  const end = new Date(`2000-01-01T${endTime}:00`);
+  const durationHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+  
+  if (durationHours <= 0) return 0;
+  
+  return participantCount * 5000 * durationHours;
+};
+
+// ユーティリティ関数
 const getDynamicStatus = (meeting: Meeting): string => {
-  // 最初に下書きと完了をチェック（修正: より明確に）
   if (meeting.status === 'draft') {
     return 'draft';
   }
@@ -68,7 +92,6 @@ const getDynamicStatus = (meeting: Meeting): string => {
     return 'completed';
   }
   
-  // scheduledの場合のみ時間ベースの判定を行う
   if (meeting.status === 'scheduled') {
     const now = new Date();
     const meetingStart = new Date(`${meeting.date}T${meeting.time}`);
@@ -127,19 +150,9 @@ const getMeetingTypeText = (meetingType?: string): string => {
     case '意思決定会議': return '意思決定会議';
     case '情報共有型会議': return '情報共有型会議';
     case '課題解決会議': return '課題解決会議';
-    case '企画想造型会議': return '企画想造型会議';
-    case '育成評価会議': return '育成評価会議';
+    case '企画構想型会議': return '企画構想型会議';
+    case '育成評価型会議': return '育成評価型会議';
     case 'その他': return 'その他';
-    default: return '未設定';
-  }
-};
-
-const getMeetingModeText = (meetingMode?: string): string => {
-  switch (meetingMode) {
-    case '対面会議（オフライン会議）': return '対面会議';
-    case 'Web会議（オンライン会議）': return 'Web会議';
-    case 'ハイブリット会議（複合型会議）': return 'ハイブリット会議';
-    case 'チャット会議（非同期会議）': return 'チャット会議';
     default: return '未設定';
   }
 };
@@ -174,16 +187,62 @@ const getDayEnd = (date: Date): Date => {
   return new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
 };
 
+// 参加者数表示のヘルパー関数
+const getParticipantCountText = (count: number): string => {
+  if (count === 0) {
+    return '参加者未設定';
+  }
+  return `${count}名`;
+};
+
+// APIデータのマッピング関数
+const mapApiDataToMeeting = (item: ApiMeetingItem): Meeting => {
+  const dateTime = new Date(item.date_time);
+  const date = dateTime.toISOString().split('T')[0];
+  const time = dateTime.toTimeString().slice(0, 5);
+  const endTime = item.end_time || undefined;
+
+  return {
+    id: item.meeting_id,
+    title: item.title,
+    date: date,
+    time: time,
+    endTime: endTime,
+    participants: item.participants ?? 0,
+    status: (item.status || 'scheduled') as Meeting['status'],
+    meetingType: item.meeting_type,
+    meetingMode: item.meeting_mode,
+    purpose: item.purpose || (item.agenda && item.agenda.length > 0 ? item.agenda[0] : ''),
+    agenda: item.agenda || [],
+    facilitator: item.name || '',
+    facilitatorOrg: item.organization_name || '',
+    createdBy: item.created_by,
+    ruleViolation: item.rule_violation || false
+  };
+};
+
 // メインコンポーネント
 function MeetingManagement() {
-  const { user } = useAuth(); // 認証されたユーザー情報を取得
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const { user } = useAuth();
+  const router = useRouter();
+  
+  // キャッシュされたデータ
+  const [cachedData, setCachedData] = useState<CachedData>({
+    myMeetings: [],
+    departmentMeetings: [],
+    departmentMembers: [],
+    lastFetched: new Date(0)
+  });
+  
+  // 表示用の会議リスト
+  const [displayMeetings, setDisplayMeetings] = useState<Meeting[]>([]);
   const [filteredMeetings, setFilteredMeetings] = useState<Meeting[]>([]);
+  
+  // UI状態
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('date');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [departmentMembers, setDepartmentMembers] = useState<DepartmentMember[]>([]);
   
   // フィルター関連の状態
   const [filterType, setFilterType] = useState<FilterType>('my');
@@ -200,46 +259,60 @@ function MeetingManagement() {
   // 削除確認ダイアログの状態
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [meetingToDelete, setMeetingToDelete] = useState<Meeting | null>(null);
-  
-  const router = useRouter();
 
-  // API関数
-  const fetchMeetings = useCallback(async (userId: string): Promise<ApiMeetingItem[]> => {
-    const params = new URLSearchParams({ user_id: userId });
-    const response = await fetch(`${API_BASE_URL}/meeting_list?${params}`);
-    if (!response.ok) {
-      throw new Error(`会議一覧取得失敗: ${response.status}`);
+  // API関数：初回データ一括取得
+  const fetchAllInitialData = useCallback(async () => {
+    if (!user) return;
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      // 並列でデータ取得（データベースアクセスは各テーブル1回のみ）
+      const [myMeetingsRes, deptMeetingsRes, deptMembersRes] = await Promise.all([
+        // 自分の会議一覧
+        fetch(`${API_BASE_URL}/meeting_list?user_id=${user.user_id}`),
+        // 部内会議一覧
+        fetch(`${API_BASE_URL}/department_meetings?organization_id=${user.organization_id}`),
+        // 部内メンバー一覧
+        fetch(`${API_BASE_URL}/department_members?organization_id=${user.organization_id}`)
+      ]);
+
+      if (!myMeetingsRes.ok || !deptMeetingsRes.ok || !deptMembersRes.ok) {
+        throw new Error('データ取得に失敗しました');
+      }
+
+      const [myMeetingsData, deptMeetingsData, deptMembersData] = await Promise.all([
+        myMeetingsRes.json() as Promise<ApiMeetingItem[]>,
+        deptMeetingsRes.json() as Promise<ApiMeetingItem[]>,
+        deptMembersRes.json() as Promise<DepartmentMember[]>
+      ]);
+
+      // データをマッピング
+      const myMeetings = myMeetingsData.map(mapApiDataToMeeting);
+      const departmentMeetings = deptMeetingsData.map(mapApiDataToMeeting);
+
+      // キャッシュに保存
+      setCachedData({
+        myMeetings,
+        departmentMeetings,
+        departmentMembers: deptMembersData,
+        lastFetched: new Date()
+      });
+
+      // 初期表示は「担当者（自分）」の会議
+      setDisplayMeetings(myMeetings);
+
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : '会議データの取得に失敗しました';
+      console.error('Data loading error:', err);
+      setError(errorMessage);
+    } finally {
+      setLoading(false);
     }
-    return response.json();
-  }, []);
+  }, [user]);
 
-  const fetchDepartmentMeetings = useCallback(async (organizationId: number): Promise<ApiMeetingItem[]> => {
-    const params = new URLSearchParams({ organization_id: organizationId.toString() });
-    const response = await fetch(`${API_BASE_URL}/department_meetings?${params}`);
-    if (!response.ok) {
-      throw new Error(`部内会議一覧取得失敗: ${response.status}`);
-    }
-    return response.json();
-  }, []);
-
-  const fetchMemberMeetings = useCallback(async (memberId: string): Promise<ApiMeetingItem[]> => {
-    const params = new URLSearchParams({ member_id: memberId });
-    const response = await fetch(`${API_BASE_URL}/member_meetings?${params}`);
-    if (!response.ok) {
-      throw new Error(`担当者会議一覧取得失敗: ${response.status}`);
-    }
-    return response.json();
-  }, []);
-
-  const fetchDepartmentMembers = useCallback(async (organizationId: number): Promise<DepartmentMember[]> => {
-    const params = new URLSearchParams({ organization_id: organizationId.toString() });
-    const response = await fetch(`${API_BASE_URL}/department_members?${params}`);
-    if (!response.ok) {
-      throw new Error(`部内メンバー取得失敗: ${response.status}`);
-    }
-    return response.json();
-  }, []);
-
+  // 会議削除API（削除時のみDBアクセス）
   const deleteMeeting = useCallback(async (meetingId: number): Promise<void> => {
     const response = await fetch(`${API_BASE_URL}/meeting/${meetingId}`, {
       method: 'DELETE',
@@ -249,49 +322,56 @@ function MeetingManagement() {
     }
   }, []);
 
-  // APIデータのマッピング関数
-  const mapApiDataToMeeting = (item: ApiMeetingItem): Meeting => ({
-    id: item.meeting_id,
-    title: item.title,
-    date: item.date_time?.split('T')[0] || '',
-    time: item.date_time?.split('T')[1]?.substring(0, 5) || '',
-    participants: item.participants ?? 0,
-    status: (item.status || 'scheduled') as Meeting['status'],
-    meetingType: item.meeting_type,
-    meetingMode: item.meeting_mode,
-    purpose: item.purpose || (item.agenda && item.agenda.length > 0 ? item.agenda[0] : ''),
-    agenda: item.agenda || [],
-    facilitator: item.name || '',
-    facilitatorOrg: item.organization_name || '',
-    createdBy: item.created_by
-  });
+  // フィルタタイプ変更時の処理（キャッシュからデータ抽出、DBアクセスなし）
+  const updateDisplayMeetings = useCallback(() => {
+    let meetings: Meeting[] = [];
 
-  // フィルタリング・ソート機能
-  const applyFiltersAndSort = useCallback((
-    meetingList: Meeting[], 
-    query: string, 
-    sortOption: string,
-    meetingTypeFilter: string,
-    currentPeriodType: PeriodType,
-    currentPeriodDate: Date
-  ) => {
-    let filtered = [...meetingList];
+    switch (filterType) {
+      case 'my':
+        meetings = cachedData.myMeetings;
+        break;
+      case 'department':
+        meetings = cachedData.departmentMeetings;
+        break;
+      case 'member':
+        if (selectedMember) {
+          // 選択されたメンバーが作成または参加している会議を抽出
+          meetings = cachedData.departmentMeetings.filter(meeting => {
+            // 作成者でフィルタ
+            if (meeting.createdBy === selectedMember) return true;
+            
+            // ファシリテーター名でフィルタ
+            const memberName = cachedData.departmentMembers.find(m => m.user_id === selectedMember)?.name;
+            if (memberName && meeting.facilitator === memberName) return true;
+            
+            return false;
+          });
+        }
+        break;
+    }
+
+    setDisplayMeetings(meetings);
+  }, [filterType, selectedMember, cachedData]);
+
+  // フィルタリング・ソート機能（フロントエンドで処理）
+  const applyFiltersAndSort = useCallback(() => {
+    let filtered = [...displayMeetings];
     
     // 期間フィルタを適用
     let startDate: Date, endDate: Date;
     
-    switch (currentPeriodType) {
+    switch (periodType) {
       case 'day':
-        startDate = getDayStart(currentPeriodDate);
-        endDate = getDayEnd(currentPeriodDate);
+        startDate = getDayStart(currentDate);
+        endDate = getDayEnd(currentDate);
         break;
       case 'week':
-        startDate = getWeekStart(currentPeriodDate);
-        endDate = getWeekEnd(currentPeriodDate);
+        startDate = getWeekStart(currentDate);
+        endDate = getWeekEnd(currentDate);
         break;
       case 'month':
-        startDate = getMonthStart(currentPeriodDate);
-        endDate = getMonthEnd(currentPeriodDate);
+        startDate = getMonthStart(currentDate);
+        endDate = getMonthEnd(currentDate);
         break;
     }
 
@@ -301,8 +381,8 @@ function MeetingManagement() {
     });
     
     // 検索フィルタ
-    if (query.trim()) {
-      const lowerQuery = query.toLowerCase();
+    if (searchQuery.trim()) {
+      const lowerQuery = searchQuery.toLowerCase();
       filtered = filtered.filter(meeting =>
         meeting.title?.toLowerCase().includes(lowerQuery) ||
         meeting.purpose?.toLowerCase().includes(lowerQuery) ||
@@ -312,13 +392,13 @@ function MeetingManagement() {
     }
     
     // 会議種別フィルタ
-    if (meetingTypeFilter && meetingTypeFilter !== 'all') {
-      filtered = filtered.filter(meeting => meeting.meetingType === meetingTypeFilter);
+    if (selectedMeetingType && selectedMeetingType !== 'all') {
+      filtered = filtered.filter(meeting => meeting.meetingType === selectedMeetingType);
     }
     
     // ソート
     filtered.sort((a, b) => {
-      switch (sortOption) {
+      switch (sortBy) {
         case 'date':
           return new Date(`${a.date} ${a.time}`).getTime() - new Date(`${b.date} ${b.time}`).getTime();
         case 'status':
@@ -333,18 +413,10 @@ function MeetingManagement() {
     });
     
     setFilteredMeetings(filtered);
-  }, []);
+  }, [displayMeetings, searchQuery, sortBy, selectedMeetingType, periodType, currentDate]);
 
-  // 参加者数表示のヘルパー関数を追加
-const getParticipantCountText = (count: number): string => {
-  if (count === 0) {
-    return '参加者未設定';
-  }
-  return `${count}名`;
-};
-
-  // 統計情報の計算
-  const getStatistics = useCallback(() => {
+  // 統計情報の計算（メモ化で最適化）
+  const statistics = useMemo(() => {
     const periodMeetings = filteredMeetings;
     
     let scheduled = 0;
@@ -376,88 +448,22 @@ const getParticipantCountText = (count: number): string => {
     return { totalMeetings, scheduled, meetingEnded, completed, drafts };
   }, [filteredMeetings]);
 
-  // 会議データの取得
-  const loadMeetingData = useCallback(async () => {
-    if (!user) return;
-
-    try {
-      setLoading(true);
-      let meetingData: ApiMeetingItem[] = [];
-
-      switch (filterType) {
-        case 'my':
-          meetingData = await fetchMeetings(user.user_id);
-          break;
-        case 'department':
-          meetingData = await fetchDepartmentMeetings(user.organization_id);
-          break;
-        case 'member':
-          if (selectedMember) {
-            meetingData = await fetchMemberMeetings(selectedMember);
-          }
-          break;
-      }
-
-      const mappedMeetings = meetingData.map(mapApiDataToMeeting);
-      setMeetings(mappedMeetings);
-      
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : '会議データの取得に失敗しました';
-      console.error('Meeting data loading error:', err);
-      setError(errorMessage);
-    } finally {
-      setLoading(false);
-    }
-  }, [user, filterType, selectedMember, fetchMeetings, fetchDepartmentMeetings, fetchMemberMeetings]);
-
-  // 初期データ取得
-  useEffect(() => {
-    const initializeData = async () => {
-      if (!user) return;
-      
-      try {
-        setLoading(true);
-        setError(null);
-
-        // 部内メンバー取得
-        const members = await fetchDepartmentMembers(user.organization_id);
-        setDepartmentMembers(members);
-        
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : '予期しないエラーが発生しました';
-        console.error('Data initialization error:', err);
-        setError(errorMessage);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    initializeData();
-  }, [user, fetchDepartmentMembers]);
-
-  // 会議データ取得
+  // 初期データ取得（起動時1回のみ）
   useEffect(() => {
     if (user) {
-      loadMeetingData();
+      fetchAllInitialData();
     }
-  }, [user, filterType, selectedMember, loadMeetingData]);
+  }, [user, fetchAllInitialData]);
 
-  // 検索・ソート・フィルターハンドラ
+  // フィルタタイプ変更時の処理
   useEffect(() => {
-    if (meetings.length > 0) {
-      applyFiltersAndSort(meetings, searchQuery, sortBy, selectedMeetingType, periodType, currentDate);
-    } else {
-      setFilteredMeetings([]);
-    }
-  }, [meetings, searchQuery, sortBy, selectedMeetingType, periodType, currentDate, applyFiltersAndSort]);
+    updateDisplayMeetings();
+  }, [filterType, selectedMember, updateDisplayMeetings]);
 
-  const handleSearch = useCallback((query: string) => {
-    setSearchQuery(query);
-  }, []);
-
-  const handleSort = useCallback((sortOption: string) => {
-    setSortBy(sortOption);
-  }, []);
+  // フィルタリング・ソート処理
+  useEffect(() => {
+    applyFiltersAndSort();
+  }, [applyFiltersAndSort]);
 
   // フィルター変更ハンドラ
   const handleFilterChange = (newFilterType: FilterType) => {
@@ -550,8 +556,14 @@ const getParticipantCountText = (count: number): string => {
     
     try {
       await deleteMeeting(meetingToDelete.id);
-      const updatedMeetings = meetings.filter(m => m.id !== meetingToDelete.id);
-      setMeetings(updatedMeetings);
+      
+      // キャッシュからも削除（DBアクセスなし）
+      setCachedData(prev => ({
+        ...prev,
+        myMeetings: prev.myMeetings.filter(m => m.id !== meetingToDelete.id),
+        departmentMeetings: prev.departmentMeetings.filter(m => m.id !== meetingToDelete.id)
+      }));
+      
       alert('会議を削除しました');
     } catch (error) {
       console.error('削除エラー:', error);
@@ -561,9 +573,6 @@ const getParticipantCountText = (count: number): string => {
       setMeetingToDelete(null);
     }
   };
-
-  // 統計情報を取得
-  const statistics = getStatistics();
 
   // ローディング状態
   if (loading) {
@@ -646,7 +655,7 @@ const getParticipantCountText = (count: number): string => {
                       placeholder="会議を検索..."
                       className="pl-10 bg-white border-gray-300"
                       value={searchQuery}
-                      onChange={(e) => handleSearch(e.target.value)}
+                      onChange={(e) => setSearchQuery(e.target.value)}
                     />
                   </div>
                 </div>
@@ -654,7 +663,7 @@ const getParticipantCountText = (count: number): string => {
                 {/* 並び順 */}
                 <div>
                   <label className="text-sm font-medium text-gray-700 block mb-2">並び順</label>
-                  <Select value={sortBy} onValueChange={handleSort}>
+                  <Select value={sortBy} onValueChange={setSortBy}>
                     <SelectTrigger className="w-full border-gray-300 bg-white">
                       <SelectValue placeholder="並び順を選択" />
                     </SelectTrigger>
@@ -697,7 +706,7 @@ const getParticipantCountText = (count: number): string => {
                         <SelectValue placeholder="担当者を選択" />
                       </SelectTrigger>
                       <SelectContent className="bg-white border border-gray-200">
-                        {departmentMembers.map((member) => (
+                        {cachedData.departmentMembers.map((member) => (
                           <SelectItem key={member.user_id} value={member.user_id}>
                             {member.name}
                           </SelectItem>
@@ -719,8 +728,8 @@ const getParticipantCountText = (count: number): string => {
                       <SelectItem value="意思決定会議">意思決定会議</SelectItem>
                       <SelectItem value="情報共有型会議">情報共有型会議</SelectItem>
                       <SelectItem value="課題解決会議">課題解決会議</SelectItem>
-                      <SelectItem value="企画想造型会議">企画想造型会議</SelectItem>
-                      <SelectItem value="育成評価会議">育成評価会議</SelectItem>
+                      <SelectItem value="企画構想型会議">企画構想型会議</SelectItem>
+                      <SelectItem value="育成評価型会議">育成評価型会議</SelectItem>
                       <SelectItem value="その他">その他</SelectItem>
                     </SelectContent>
                   </Select>
@@ -863,101 +872,121 @@ const getParticipantCountText = (count: number): string => {
             </div>
           </div>
         ) : (
-          filteredMeetings.map((meeting) => (
-            <Card key={meeting.id} className="bg-white hover:shadow-md transition-shadow cursor-pointer">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg font-semibold text-gray-900 truncate mr-2">
-                    {meeting.title}
-                  </CardTitle>
-                  <span className={`text-xs px-2 py-1 rounded-full flex-shrink-0 ${getStatusColor(meeting)}`}>
-                    {getStatusText(meeting)}
-                  </span>
-                </div>
-                {/* 会議の目的をタイトルの下に表示 */}
-                {meeting.purpose && meeting.purpose.trim() !== '' && (
-                  <div className="mt-2 flex items-center text-base text-gray-700">
-                    <Target className="h-4 w-4 mr-2 flex-shrink-0" />
-                    <span className="truncate">{meeting.purpose}</span>
-                  </div>
-                )}
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {/* 日付と時間を横並び */}
-                <div className="flex items-center text-sm text-gray-600">
-                  <div className="flex items-center flex-1 mr-2">
-                    <Calendar className="h-4 w-4 mr-2 flex-shrink-0" />
-                    <span>{meeting.date}</span>
-                  </div>
-                  <div className="flex items-center flex-1">
-                    <Clock className="h-4 w-4 mr-2 flex-shrink-0" />
-                    <span>{meeting.time}</span>
-                  </div>
-                </div>
-                
-                {/* ファシリテータと参加人数を横並び */}
-                <div className="flex items-center text-sm text-gray-600">
-                  <div className="flex items-center flex-1 mr-2">
-                    <User className="h-4 w-4 mr-2 flex-shrink-0" />
-                    <span className="truncate">
-                      {(meeting.facilitator || meeting.facilitatorOrg) 
-                        ? (meeting.facilitatorOrg && meeting.facilitator 
-                            ? `${meeting.facilitatorOrg} ${meeting.facilitator}`
-                            : meeting.facilitator || meeting.facilitatorOrg)
-                        : '未設定'
-                      }
+          filteredMeetings.map((meeting) => {
+            // 会議コストの計算
+            const meetingCost = meeting.endTime ? 
+              calculateMeetingCost(meeting.participants + 1, meeting.time, meeting.endTime) : 0;
+            
+            return (
+              <Card key={meeting.id} className="bg-white hover:shadow-md transition-shadow cursor-pointer">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1 mr-2">
+                      <CardTitle className="text-lg font-semibold text-gray-900 truncate">
+                        {meeting.title}
+                        {/* 会議コスト表示 */}
+                        {meetingCost > 0 && (
+                          <span className="ml-2 text-sm text-red-600 font-bold">
+                            ¥{meetingCost.toLocaleString()}
+                          </span>
+                        )}
+                      </CardTitle>
+                      {/* 招集ルールチェック表示 */}
+                      {meeting.ruleViolation && (
+                        <div className="flex items-center mt-1">
+                          <AlertTriangle className="h-3 w-3 text-red-600 mr-1" />
+                          <span className="text-xs text-red-600 font-medium">招集ルールチェック</span>
+                        </div>
+                      )}
+                    </div>
+                    <span className={`text-xs px-2 py-1 rounded-full flex-shrink-0 ${getStatusColor(meeting)}`}>
+                      {getStatusText(meeting)}
                     </span>
                   </div>
-                  <div className="flex items-center flex-1">
-                    <Users className="h-4 w-4 mr-2 flex-shrink-0" />
-                    {/* 修正: 参加者数の表示をより明確に */}
-                    <span className={meeting.participants === 0 ? 'text-gray-400' : ''}>
-                      {getParticipantCountText(meeting.participants)}
-                    </span>
-                  </div>
-                </div>
-                
-                {/* 会議種別を表示 */}
-                {meeting.meetingType && (
+                  {/* 会議の目的をタイトルの下に表示 */}
+                  {meeting.purpose && meeting.purpose.trim() !== '' && (
+                    <div className="mt-2 flex items-center text-base text-gray-700">
+                      <Target className="h-4 w-4 mr-2 flex-shrink-0" />
+                      <span className="truncate">{meeting.purpose}</span>
+                    </div>
+                  )}
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {/* 日付と時間を横並び */}
                   <div className="flex items-center text-sm text-gray-600">
-                    <Tag className="h-4 w-4 mr-2 flex-shrink-0" />
-                    <span className="truncate">{getMeetingTypeText(meeting.meetingType)}</span>
+                    <div className="flex items-center flex-1 mr-2">
+                      <Calendar className="h-4 w-4 mr-2 flex-shrink-0" />
+                      <span>{meeting.date}</span>
+                    </div>
+                    <div className="flex items-center flex-1">
+                      <Clock className="h-4 w-4 mr-2 flex-shrink-0" />
+                      <span>{meeting.time}{meeting.endTime ? ` - ${meeting.endTime}` : ''}</span>
+                    </div>
                   </div>
-                )}
-                <div className="pt-3 border-t border-gray-200">
-                  <div className="flex space-x-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="flex-1"
-                      onClick={() => handleEditMeeting(meeting)}
-                    >
-                      <Edit className="h-3 w-3 mr-1" />
-                      編集
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="flex-1"
-                      onClick={() => handleViewDetails(meeting.id)}
-                    >
-                      <Eye className="h-3 w-3 mr-1" />
-                      詳細
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="flex-1 text-red-600 border-red-300 hover:bg-red-50"
-                      onClick={() => handleDeleteClick(meeting)}
-                    >
-                      <Trash2 className="h-3 w-3 mr-1" />
-                      削除
-                    </Button>
+                  
+                  {/* ファシリテータと参加人数を横並び */}
+                  <div className="flex items-center text-sm text-gray-600">
+                    <div className="flex items-center flex-1 mr-2">
+                      <User className="h-4 w-4 mr-2 flex-shrink-0" />
+                      <span className="truncate">
+                        {(meeting.facilitator || meeting.facilitatorOrg) 
+                          ? (meeting.facilitatorOrg && meeting.facilitator 
+                              ? `${meeting.facilitatorOrg} ${meeting.facilitator}`
+                              : meeting.facilitator || meeting.facilitatorOrg)
+                          : '未設定'
+                        }
+                      </span>
+                    </div>
+                    <div className="flex items-center flex-1">
+                      <Users className="h-4 w-4 mr-2 flex-shrink-0" />
+                      <span className={meeting.participants === 0 ? 'text-gray-400' : ''}>
+                        {getParticipantCountText(meeting.participants)}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))
+                  
+                  {/* 会議種別を表示 */}
+                  {meeting.meetingType && (
+                    <div className="flex items-center text-sm text-gray-600">
+                      <Tag className="h-4 w-4 mr-2 flex-shrink-0" />
+                      <span className="truncate">{getMeetingTypeText(meeting.meetingType)}</span>
+                    </div>
+                  )}
+                  <div className="pt-3 border-t border-gray-200">
+                    <div className="flex space-x-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => handleEditMeeting(meeting)}
+                      >
+                        <Edit className="h-3 w-3 mr-1" />
+                        編集
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => handleViewDetails(meeting.id)}
+                      >
+                        <Eye className="h-3 w-3 mr-1" />
+                        詳細
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1 text-red-600 border-red-300 hover:bg-red-50"
+                        onClick={() => handleDeleteClick(meeting)}
+                      >
+                        <Trash2 className="h-3 w-3 mr-1" />
+                        削除
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })
         )}
       </div>
 
