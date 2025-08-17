@@ -25,7 +25,8 @@ interface LoginFormData {
 }
 
 // APIエンドポイント
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// del nakano const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://aps-n2-02.azurewebsites.net'; // add nakano 
 
 // パスワード検証関数
 const validatePassword = (password: string): boolean => {
