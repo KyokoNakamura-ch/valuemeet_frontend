@@ -85,7 +85,13 @@ export default function Dashboard() {
   const handleLogin = async () => {
     setLoginError('');
     setIsLoggingIn(true);
-    
+
+// 🔍 デバッグ: 環境変数の確認
+  console.log('=== デバッグ開始 ===');
+  console.log('API_BASE_URL:', API_BASE_URL);
+  console.log('process.env.NEXT_PUBLIC_API_URL:', process.env.NEXT_PUBLIC_API_URL);
+  console.log('NODE_ENV:', process.env.NODE_ENV);
+
     try {
       // 入力値検証
       if (!loginForm.userId || !loginForm.password) {
@@ -107,6 +113,11 @@ export default function Dashboard() {
           password: hashedPassword
         })
       });
+
+    console.log('リクエストURL:', API_BASE_URL);
+    console.log('リクエストボディ:', response);
+    console.log('リクエスト送信開始...');
+    
 
       if (response.ok) {
         const userData = await response.json();
@@ -148,7 +159,7 @@ export default function Dashboard() {
           <CardHeader className="text-center pb-4">
             <CardTitle className="text-2xl font-bold text-gray-900 flex items-center justify-center">
               <Lock className="h-6 w-6 mr-2 text-orange-600" />
-              会議管理システム
+              会議管理システム Value Meet
             </CardTitle>
             <p className="text-sm text-gray-600 mt-2">ログインしてください</p>
           </CardHeader>
