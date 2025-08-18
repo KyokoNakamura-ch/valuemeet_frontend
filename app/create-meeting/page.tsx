@@ -878,41 +878,43 @@ function CreateMeetingPage() {
                 </Button>
               </div>
 
-              {/* 参加者リスト */}
+              {/* 参加者リスト（2段組構成に変更） */}
               {formData.participants.length > 0 && (
                 <div className="space-y-2">
                   <Label className="text-sm font-medium text-gray-700">登録済み参加者</Label>
-                  {formData.participants.map((participant, index) => (
-                    <div key={index} className="flex items-center space-x-2 p-2 bg-gray-50 rounded">
-                      <div className="flex-1">
-                        <div className="font-medium">{participant.name}</div>
-                        <div className="text-sm text-gray-600">{participant.organization_name}</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {formData.participants.map((participant, index) => (
+                      <div key={index} className="flex items-center space-x-2 p-2 bg-gray-50 rounded">
+                        <div className="flex-1">
+                          <div className="font-medium">{participant.name}</div>
+                          <div className="text-sm text-gray-600">{participant.organization_name}</div>
+                        </div>
+                        <Select
+                          value={participant.role}
+                          onValueChange={(value) => updateParticipantRole(index, value)}
+                        >
+                          <SelectTrigger className="w-40">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="会議主催者">会議主催者</SelectItem>
+                            <SelectItem value="実行責任者">実行責任者</SelectItem>
+                            <SelectItem value="説明責任者">説明責任者</SelectItem>
+                            <SelectItem value="有識相談者">有識相談者</SelectItem>
+                            <SelectItem value="報告先">報告先</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => removeParticipant(index)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
                       </div>
-                      <Select
-                        value={participant.role}
-                        onValueChange={(value) => updateParticipantRole(index, value)}
-                      >
-                        <SelectTrigger className="w-40">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="会議主催者">会議主催者</SelectItem>
-                          <SelectItem value="実行責任者">実行責任者</SelectItem>
-                          <SelectItem value="説明責任者">説明責任者</SelectItem>
-                          <SelectItem value="有識相談者">有識相談者</SelectItem>
-                          <SelectItem value="報告先">報告先</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => removeParticipant(index)}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -1025,6 +1027,8 @@ function CreateMeetingPage() {
                   }
                 }}
                 autoFocus
+                autoComplete="off"
+                spellCheck="false"
               />
               <Button 
                 onClick={handleNameSearch} 

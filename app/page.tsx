@@ -154,7 +154,7 @@ export default function Dashboard() {
           <CardHeader className="text-center pb-4">
             <CardTitle className="text-2xl font-bold text-gray-900 flex items-center justify-center">
               <Lock className="h-6 w-6 mr-2 text-orange-600" />
-              会議管理システム
+              会議管理システム Value Meet(Ver0)
             </CardTitle>
             <p className="text-sm text-gray-600 mt-2">ログインしてください</p>
           </CardHeader>
