@@ -24,8 +24,14 @@ interface LoginFormData {
   password: string;
 }
 
-// APIエンドポイント
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// APIエンドポイント（本番は必須、devだけlocalhost許容、バックエンドつながらない対策）
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : undefined);
+
+if (!API_BASE_URL) {
+  throw new Error('NEXT_PUBLIC_API_URL is not set (production).');
+}
 
 // パスワード検証関数
 const validatePassword = (password: string): boolean => {
