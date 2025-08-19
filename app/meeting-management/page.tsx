@@ -875,7 +875,7 @@ function MeetingManagement() {
           filteredMeetings.map((meeting) => {
             // 会議コストの計算
             const meetingCost = meeting.endTime ? 
-              calculateMeetingCost(meeting.participants + 1, meeting.time, meeting.endTime) : 0;
+              calculateMeetingCost(meeting.participants, meeting.time, meeting.endTime) : 0;
             
             return (
               <Card key={meeting.id} className="bg-white hover:shadow-md transition-shadow cursor-pointer">
@@ -970,7 +970,7 @@ function MeetingManagement() {
                         onClick={() => handleViewDetails(meeting.id)}
                       >
                         <Eye className="h-3 w-3 mr-1" />
-                        詳細
+                        会議サポート
                       </Button>
                       <Button
                         size="sm"

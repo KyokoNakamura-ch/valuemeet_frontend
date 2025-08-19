@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Plus, X, ArrowLeft, Search, Bot, Loader2, Save, Sparkles, AlertTriangle } from 'lucide-react';
+import { Plus, X, ArrowLeft, Search, Bot, Loader2, Save, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useAuth, withAuth } from '../../AuthContext';
 
 // API Base URL (環境に応じて変更してください)
@@ -59,6 +59,12 @@ interface RuleViolation {
   message: string;
 }
 
+// 目的チェック結果の型定義
+interface PurposeCheckResult {
+  status: '要検討' | '目的チェック済';
+  messages: string[];
+}
+
 // 時間選択のオプションを生成（8:00-18:00、15分間隔）
 const generateTimeOptions = () => {
   const options = [];
@@ -98,7 +104,8 @@ const checkMeetingRules = (meetingType: string, participants: Participant[]): Ru
     '実行責任者': 0,
     '説明責任者': 0,
     '有識相談者': 0,
-    '報告先': 0
+    '報告先': 0,
+    'ファシリテーター': 0
   };
   
   participants.forEach(p => {
@@ -180,6 +187,10 @@ function EditMeetingPage() {
   const [ruleViolations, setRuleViolations] = useState<RuleViolation[]>([]);
   const [isRuleWarningOpen, setIsRuleWarningOpen] = useState(false);
   const [ignoreRules, setIgnoreRules] = useState(false);
+
+  // 目的チェック関連の状態
+  const [purposeCheckResult, setPurposeCheckResult] = useState<PurposeCheckResult | null>(null);
+  const [isPurposeChecking, setIsPurposeChecking] = useState(false);
 
   // ユーザー情報がない場合のローディング表示
   if (!user) {
@@ -341,6 +352,7 @@ function EditMeetingPage() {
             case '説明責任者':
             case '有識相談者':
             case '報告先':
+            case 'ファシリテーター':
               mappedRole = p.role_type; break;
             default: mappedRole = '会議主催者';
           }
@@ -368,6 +380,40 @@ function EditMeetingPage() {
     }
   };
 
+  // 目的チェック機能
+  const handlePurposeCheck = async () => {
+    // バリデーション
+    const purposes = formData.purposes.filter(p => p.trim()).join(' ');
+    if (!purposes || !formData.title || !formData.description) {
+      alert('会議の目的、会議タイトル、会議概要を入力してください');
+      return;
+    }
+
+    setIsPurposeChecking(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/purpose_check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          purpose: purposes,
+          title: formData.title,
+          description: formData.description
+        })
+      });
+
+      if (!response.ok) throw new Error('目的チェックに失敗しました');
+      
+      const result = await response.json();
+      setPurposeCheckResult(result);
+
+    } catch (error) {
+      console.error('目的チェックエラー:', error);
+      alert('目的チェックに失敗しました');
+    } finally {
+      setIsPurposeChecking(false);
+    }
+  };
+
   // 目的の追加・削除・更新
   const addPurpose = () => {
     setFormData(prev => ({
@@ -388,6 +434,8 @@ function EditMeetingPage() {
       ...prev,
       purposes: prev.purposes.map((obj, i) => i === index ? value : obj)
     }));
+    // 目的が変更されたら目的チェック結果をリセット
+    setPurposeCheckResult(null);
   };
 
   // トピックの追加・削除・更新
@@ -573,6 +621,7 @@ function EditMeetingPage() {
           case '説明責任者':
           case '有識相談者':
           case '報告先':
+          case 'ファシリテーター':
             mappedRole = user.past_role; break;
           default: mappedRole = '会議主催者';
         }
@@ -595,7 +644,7 @@ function EditMeetingPage() {
     if (!formData.startTime || !formData.endTime || formData.participants.length === 0) {
       return 0;
     }
-    return calculateMeetingCost(formData.participants.length + 1, formData.startTime, formData.endTime); // +1は作成者
+    return calculateMeetingCost(formData.participants.length, formData.startTime, formData.endTime);
   };
 
   // 会議更新・一時保存の共通処理（削除→再作成）（ルールチェック追加）
@@ -603,6 +652,12 @@ function EditMeetingPage() {
     // バリデーション
     if (!formData.title || !formData.date || !formData.startTime) {
       alert('必須項目を入力してください');
+      return;
+    }
+
+    // 目的チェック済みでない場合はエラー（下書きでない場合のみ）
+    if (!isDraft && (!purposeCheckResult || purposeCheckResult.status !== '目的チェック済')) {
+      alert('会議の目的チェックを完了してください');
       return;
     }
 
@@ -766,6 +821,17 @@ function EditMeetingPage() {
     router.back();
   };
 
+  // フォームが変更されたら目的チェック結果をリセット（タイトルと概要）
+  const handleTitleChange = (value: string) => {
+    setFormData(prev => ({ ...prev, title: value }));
+    setPurposeCheckResult(null);
+  };
+
+  const handleDescriptionChange = (value: string) => {
+    setFormData(prev => ({ ...prev, description: value }));
+    setPurposeCheckResult(null);
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -807,7 +873,7 @@ function EditMeetingPage() {
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription className="text-red-700 font-semibold">
               予想会議コスト: ¥{getMeetingCost().toLocaleString()}
-              （参加者{formData.participants.length + 1}名 × ¥5,000 × {formData.startTime && formData.endTime ? 
+              （参加者{formData.participants.length}名 × ¥5,000 × {formData.startTime && formData.endTime ? 
                 Math.round(((new Date(`2000-01-01T${formData.endTime}:00`).getTime() - 
                 new Date(`2000-01-01T${formData.startTime}:00`).getTime()) / (1000 * 60 * 60)) * 10) / 10 : 0}時間）
             </AlertDescription>
@@ -827,7 +893,7 @@ function EditMeetingPage() {
                 <Input
                   id="title"
                   value={formData.title}
-                  onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
+                  onChange={(e) => handleTitleChange(e.target.value)}
                   placeholder="会議のタイトルを入力してください"
                   className="mt-1"
                 />
@@ -837,7 +903,7 @@ function EditMeetingPage() {
                 <Textarea
                   id="description"
                   value={formData.description}
-                  onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                  onChange={(e) => handleDescriptionChange(e.target.value)}
                   placeholder="会議の概要を入力してください"
                   className="mt-1"
                   rows={3}
@@ -990,15 +1056,52 @@ function EditMeetingPage() {
                   )}
                 </div>
               ))}
-              <Button
-                type="button"
-                variant="outline"
-                onClick={addPurpose}
-                className="w-full"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                追加
-              </Button>
+              <div className="flex space-x-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addPurpose}
+                  className="flex-1"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  追加
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handlePurposeCheck}
+                  disabled={isPurposeChecking}
+                  className="flex-1 bg-blue-50 hover:bg-blue-100 border-blue-200"
+                >
+                  {isPurposeChecking ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4 mr-2" />
+                  )}
+                  目的チェック
+                </Button>
+              </div>
+
+              {/* 目的チェック結果表示 */}
+              {purposeCheckResult && (
+                <Alert className={`mt-4 ${purposeCheckResult.status === '目的チェック済' ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+                  {purposeCheckResult.status === '目的チェック済' ? (
+                    <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <AlertTriangle className="h-4 w-4 text-red-600" />
+                  )}
+                  <AlertDescription className={purposeCheckResult.status === '目的チェック済' ? 'text-green-700' : 'text-red-700'}>
+                    <div className="font-semibold mb-2">
+                      {purposeCheckResult.status === '目的チェック済' ? '⚪︎目的チェック済' : '△要検討'}
+                    </div>
+                    {purposeCheckResult.messages.map((message, index) => (
+                      <div key={index} className="text-sm">
+                        ・{message}
+                      </div>
+                    ))}
+                  </AlertDescription>
+                </Alert>
+              )}
             </CardContent>
           </Card>
 
@@ -1160,6 +1263,7 @@ function EditMeetingPage() {
                             <SelectItem value="説明責任者">説明責任者</SelectItem>
                             <SelectItem value="有識相談者">有識相談者</SelectItem>
                             <SelectItem value="報告先">報告先</SelectItem>
+                            <SelectItem value="ファシリテーター">ファシリテーター</SelectItem>
                           </SelectContent>
                         </Select>
                         <Button
@@ -1183,8 +1287,8 @@ function EditMeetingPage() {
         <div className="flex justify-center space-x-4 py-8">
           <Button
             onClick={handleSubmit}
-            disabled={isSubmitting}
-            className="bg-orange-600 hover:bg-orange-700 px-8"
+            disabled={isSubmitting || (!purposeCheckResult || purposeCheckResult.status !== '目的チェック済')}
+            className="bg-orange-600 hover:bg-orange-700 px-8 disabled:opacity-50"
           >
             {isSubmitting ? (
               <>
