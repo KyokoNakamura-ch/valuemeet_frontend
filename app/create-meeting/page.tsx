@@ -81,8 +81,8 @@ const calculateMeetingCost = (participantCount: number, startTime: string, endTi
   return participantCount * 5000 * durationHours;
 };
 
-// 会議招集ルールチェック関数
-const checkMeetingRules = (meetingType: string, participants: Participant[]): RuleViolation[] => {
+// 会議招集ルールチェック関数（ルール5-9追加）
+const checkMeetingRules = (meetingType: string, priority: string, participants: Participant[]): RuleViolation[] => {
   const violations: RuleViolation[] = [];
   
   // 役割別の参加者数をカウント
@@ -131,6 +131,44 @@ const checkMeetingRules = (meetingType: string, participants: Participant[]): Ru
     violations.push({
       rule: '説明責任者ルール',
       message: '「説明責任者」は必ず1人である必要があります。'
+    });
+  }
+  
+  // ルール5: 全ての会議においてファシリテーターは1人
+  if (roleCounts['ファシリテーター'] !== 1) {
+    violations.push({
+      rule: 'ファシリテータールール',
+      message: '「ファシリテーター」は必ず1人である必要があります。'
+    });
+  }
+  
+  // ルール6: 全ての会議において会議主催者は1人まで
+  if (roleCounts['会議主催者'] > 1) {
+    violations.push({
+      rule: '会議主催者人数ルール',
+      message: '「会議主催者」は1人までに制限されています。'
+    });
+  }
+  
+  // ルール7-9: 優先度別実行責任者人数制限
+  if (priority === 'high' && roleCounts['実行責任者'] > 3) {
+    violations.push({
+      rule: '優先度高実行責任者ルール',
+      message: '優先度「高」の会議では「実行責任者」は3名までに制限されています。'
+    });
+  }
+  
+  if (priority === 'medium' && roleCounts['実行責任者'] > 2) {
+    violations.push({
+      rule: '優先度中実行責任者ルール',
+      message: '優先度「中」の会議では「実行責任者」は2名までに制限されています。'
+    });
+  }
+  
+  if (priority === 'low' && roleCounts['実行責任者'] > 1) {
+    violations.push({
+      rule: '優先度低実行責任者ルール',
+      message: '優先度「低」の会議では「実行責任者」は1名までに制限されています。'
     });
   }
   
@@ -464,7 +502,7 @@ function CreateMeetingPage() {
 
     // 招集ルールチェック（下書きでない場合のみ）
     if (!isDraft && formData.type && formData.participants.length > 0) {
-      const violations = checkMeetingRules(formData.type, formData.participants);
+      const violations = checkMeetingRules(formData.type, formData.priority, formData.participants);
       if (violations.length > 0 && !ignoreRules) {
         setRuleViolations(violations);
         setIsRuleWarningOpen(true);
