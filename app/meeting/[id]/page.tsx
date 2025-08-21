@@ -141,6 +141,14 @@ function MeetingFacilitation() {
   const [minutes, setMinutes] = useState<Minute[]>([]);
   const [currentAgenda, setCurrentAgenda] = useState(0);
 
+  // 新機能: チェックボックス状態管理
+  const [agendaChecked, setAgendaChecked] = useState<boolean[]>([]);
+  
+  // 新機能: カウントダウン関連
+  const [remainingTime, setRemainingTime] = useState<number>(0); // 秒単位
+  const [meetingDuration, setMeetingDuration] = useState<number>(0); // 分単位
+  const [startTime, setStartTime] = useState<Date | null>(null);
+
   // ユーザー情報がない場合のローディング表示
   if (!user) {
     return (
@@ -177,6 +185,93 @@ function MeetingFacilitation() {
         if (meetingResponse.status === 'fulfilled' && meetingResponse.value.ok) {
           const meetingData = await meetingResponse.value.json();
           setMeeting(meetingData);
+          
+          // デバッグ用：実際のデータを確認
+          console.log('会議データ:', {
+            date_time: meetingData.date_time,
+            end_time: meetingData.end_time,
+            title: meetingData.title
+          });
+          
+          // 会議時間を計算
+          if (meetingData.end_time && meetingData.date_time) {
+            try {
+              // 開始日時の解析（ISO形式対応）
+              const startDate = new Date(meetingData.date_time);
+              
+              let endDate;
+              
+              // 終了時刻の処理
+              if (meetingData.end_time.includes(':') && meetingData.end_time.length <= 8) {
+                // 時刻のみの形式（例: "12:00"）
+                // ISO形式の場合はTで分割、そうでなければスペースで分割
+                const startDateString = meetingData.date_time.includes('T') 
+                  ? meetingData.date_time.split('T')[0] 
+                  : meetingData.date_time.split(' ')[0];
+                
+                // 秒が含まれていない場合は追加
+                const timeWithSeconds = meetingData.end_time.split(':').length === 2 
+                  ? `${meetingData.end_time}:00` 
+                  : meetingData.end_time;
+                
+                // 終了日時を作成
+                endDate = new Date(`${startDateString}T${timeWithSeconds}`);
+                
+                // 終了時刻が開始時刻より前の場合（日をまたぐ場合）
+                if (endDate <= startDate) {
+                  const nextDay = new Date(startDate);
+                  nextDay.setDate(nextDay.getDate() + 1);
+                  const nextDayString = nextDay.toISOString().split('T')[0];
+                  endDate = new Date(`${nextDayString}T${timeWithSeconds}`);
+                }
+              } else {
+                // フル日時形式
+                endDate = new Date(meetingData.end_time);
+                if (isNaN(endDate.getTime())) {
+                  endDate = new Date(meetingData.end_time.replace(' ', 'T'));
+                }
+              }
+              
+              console.log('計算用日付:', {
+                original_date_time: meetingData.date_time,
+                original_end_time: meetingData.end_time,
+                startDate: startDate.toLocaleString('ja-JP'),
+                endDate: endDate.toLocaleString('ja-JP'),
+                startValid: !isNaN(startDate.getTime()),
+                endValid: !isNaN(endDate.getTime())
+              });
+              
+              // 日付が有効かチェック
+              if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+                if (endDate > startDate) {
+                  const durationMinutes = Math.floor((endDate.getTime() - startDate.getTime()) / (1000 * 60));
+                  console.log('計算された会議時間:', durationMinutes, '分');
+                  
+                  setMeetingDuration(durationMinutes);
+                  setRemainingTime(durationMinutes * 60); // 秒に変換
+                } else {
+                  console.error('終了時刻が開始時刻より前です:', {
+                    start: startDate.toLocaleString('ja-JP'),
+                    end: endDate.toLocaleString('ja-JP')
+                  });
+                }
+              } else {
+                console.error('日付の解析に失敗しました:', {
+                  startValid: !isNaN(startDate.getTime()),
+                  endValid: !isNaN(endDate.getTime()),
+                  startDate: startDate,
+                  endDate: endDate
+                });
+              }
+            } catch (error) {
+              console.error('会議時間の計算に失敗しました:', error);
+            }
+          } else {
+            console.warn('開始時刻または終了時刻が設定されていません:', {
+              date_time: meetingData.date_time,
+              end_time: meetingData.end_time
+            });
+          }
         } else {
           throw new Error('会議詳細の取得に失敗しました');
         }
@@ -211,9 +306,12 @@ function MeetingFacilitation() {
           }
           
           setAgendaItems(items);
+          // チェックボックス状態を初期化
+          setAgendaChecked(new Array(items.length).fill(false));
         } else {
           console.warn('アジェンダ情報の取得に失敗しました');
           setAgendaItems(['アジェンダが設定されていません']);
+          setAgendaChecked([false]);
         }
 
       } catch (error) {
@@ -226,6 +324,71 @@ function MeetingFacilitation() {
 
     fetchMeetingData();
   }, [params.id, router]);
+
+  // カウントダウンタイマー
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    
+    if (isStarted && !isPaused && remainingTime > 0) {
+      timer = setInterval(() => {
+        setRemainingTime(prev => {
+          if (prev <= 1) {
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isStarted, isPaused, remainingTime]);
+
+  // 時間のフォーマット関数
+  const formatTime = (seconds: number) => {
+    // 会議時間が設定されていない場合
+    if (isNaN(seconds) || seconds < 0 || meetingDuration <= 0) {
+      return "時間未設定";
+    }
+    
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    
+    if (hours > 0) {
+      return `${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // チェックボックス変更ハンドラー
+  const handleCheckboxChange = (index: number) => {
+    const newChecked = [...agendaChecked];
+    newChecked[index] = !newChecked[index];
+    setAgendaChecked(newChecked);
+  };
+
+  // 全てチェック済みかどうか
+  const allChecked = agendaChecked.every(checked => checked);
+
+  // 10分前警告の判定
+  const shouldShowWarning = isStarted && remainingTime <= 600 && remainingTime > 0 && !allChecked && meetingDuration > 0;
+
+  // 予想会議コストの計算
+  const calculateMeetingCost = () => {
+    const participantCount = participants.length || 0;
+    const hourlyRate = 5000; // ¥5,000
+    
+    if (meetingDuration <= 0 || isNaN(meetingDuration)) {
+      return null; // 計算不可
+    }
+    
+    const durationHours = meetingDuration / 60;
+    const cost = participantCount * hourlyRate * durationHours;
+    
+    return Math.round(cost);
+  };
 
   // ローディング表示
   if (isLoading) {
@@ -279,6 +442,7 @@ function MeetingFacilitation() {
       // 初回開始
       setIsStarted(true);
       setIsPaused(false);
+      setStartTime(new Date());
       
       // 開始時の議事録を追加
       const startMinute: Minute = {
@@ -351,6 +515,19 @@ function MeetingFacilitation() {
               {meeting.description && (
                 <p className="text-sm text-gray-600 mt-1">{meeting.description}</p>
               )}
+              {/* 残り時間表示 */}
+              {isStarted && (
+                <div className="mt-2">
+                  <span className="text-lg font-semibold text-blue-600">
+                    残り時間: {formatTime(remainingTime)}
+                  </span>
+                  {shouldShowWarning && (
+                    <div className="text-red-600 font-bold mt-1">
+                      会議進行：要チェック
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
           <div className="flex items-center space-x-3">
@@ -396,20 +573,39 @@ function MeetingFacilitation() {
             <Card className="bg-white h-fit">
               <CardHeader>
                 <CardTitle className="text-lg font-semibold text-gray-900">アジェンダ</CardTitle>
+                {allChecked && (
+                  <div className="text-green-600 font-bold text-lg">
+                    Mission Complete!
+                  </div>
+                )}
               </CardHeader>
               <CardContent className="space-y-3">
                 {agendaItems.map((item: string, index: number) => (
                   <div 
                     key={index}
-                    className={`p-3 rounded-lg border transition-colors cursor-pointer ${
+                    className={`p-3 rounded-lg border transition-colors ${
                       index === currentAgenda 
                         ? 'bg-orange-50 border-orange-200' 
                         : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
                     }`}
-                    onClick={() => setCurrentAgenda(index)}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-gray-900">{item}</span>
+                      <div className="flex items-center space-x-3">
+                        <input
+                          type="checkbox"
+                          checked={agendaChecked[index] || false}
+                          onChange={() => handleCheckboxChange(index)}
+                          className="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded"
+                        />
+                        <span 
+                          className={`font-medium text-gray-900 cursor-pointer ${
+                            agendaChecked[index] ? 'line-through text-gray-500' : ''
+                          }`}
+                          onClick={() => setCurrentAgenda(index)}
+                        >
+                          {item}
+                        </span>
+                      </div>
                       {index === currentAgenda && (
                         <Badge className="bg-orange-600 text-white">進行中</Badge>
                       )}
@@ -423,6 +619,31 @@ function MeetingFacilitation() {
             <Card className="bg-white h-fit">
               <CardHeader>
                 <CardTitle className="text-lg font-semibold text-gray-900">ファシリテーションツール</CardTitle>
+                {/* 予想会議コスト表示 */}
+                <div className="text-sm text-gray-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
+                  <div className="font-medium text-yellow-800">予想会議コスト</div>
+                  {(() => {
+                    const cost = calculateMeetingCost();
+                    if (cost === null || meetingDuration <= 0) {
+                      return (
+                        <>
+                          <div className="text-lg font-bold text-red-600">計算不可</div>
+                          <div className="text-xs text-red-600">終了時刻が設定されていません</div>
+                        </>
+                      );
+                    }
+                    return (
+                      <>
+                        <div className="text-lg font-bold text-yellow-900">
+                          ¥{cost.toLocaleString()}
+                        </div>
+                        <div className="text-xs text-yellow-700">
+                          参加者{participants.length}名 × ¥5,000 × {meetingDuration}分
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
                 <p className="text-sm text-gray-600">会議進行をサポートするツールです</p>
               </CardHeader>
               <CardContent className="space-y-4">
