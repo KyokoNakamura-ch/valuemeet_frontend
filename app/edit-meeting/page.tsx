@@ -31,11 +31,13 @@ interface SearchResult {
   email?: string;
 }
 
+// 🆕 会議名フィールドを追加
 interface RecommendedUser {
   user_id: string;
   name: string;
   organization_name: string;
   past_role?: string;
+  past_meeting_title?: string;  // 🆕 過去に参加した会議名
 }
 
 interface Meeting {
@@ -1480,7 +1482,7 @@ function EditMeetingPage() {
         </DialogContent>
       </Dialog>
 
-      {/* AI推薦結果モーダル */}
+      {/* 🆕 AI推薦結果モーダル（会議名表示対応） */}
       <Dialog open={isRecommendModalOpen} onOpenChange={setIsRecommendModalOpen}>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50">
           <DialogHeader>
@@ -1499,8 +1501,12 @@ function EditMeetingPage() {
                   <div className="flex-1">
                     <div className="font-medium">{user.name}</div>
                     <div className="text-sm text-gray-600">{user.organization_name}</div>
+                    {/* 🆕 過去の役割と会議名を両方表示 */}
                     {user.past_role && (
                       <div className="text-xs text-blue-600">過去の役割: {user.past_role}</div>
+                    )}
+                    {user.past_meeting_title && (
+                      <div className="text-xs text-green-600">会議名: {user.past_meeting_title}</div>
                     )}
                   </div>
                   <Button
