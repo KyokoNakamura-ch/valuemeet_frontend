@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Upload, FileText, CheckCircle, User, Calendar, ArrowLeft } from 'lucide-react';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE!;
+const API_BASE = process.env.NEXT_PUBLIC_API_URL!;
 
 // 優先度の日本語↔英語マッパー（UIは英語、登録は日本語）
 const jpToEnPriority = (p?: string | null) => (p === '高' ? 'high' : p === '低' ? 'low' : 'medium');
