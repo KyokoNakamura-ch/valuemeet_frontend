@@ -299,14 +299,39 @@ export default function TodoManagement() {
                     </div>
                   </div>
                   <div className="flex items-center justify-end mt-4 space-x-2">
-                    <Button size="sm" variant="outline">
+                    {/* 編集 */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); router.push(`/todo-edit?todoId=${todo.id}`); }}
+                    >
                       編集
                     </Button>
-                    <Button size="sm" variant="outline">
+
+                    {/* 詳細 */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); router.push(`/todo-detail?todoId=${todo.id}`); }}
+                    >
                       詳細
                     </Button>
+
+                    {/* 完了 */}
                     {todo.status !== 'completed' && (
-                      <Button size="sm" className="bg-green-600 hover:bg-green-700">
+                      <Button
+                        size="sm"
+                        className="bg-green-600 hover:bg-green-700"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // いまはフロント側だけで完了に更新（APIできたら差し替え）
+                          setTodos(prev => prev.map(t => t.id === todo.id ? { ...t, status: 'completed' } : t));
+                          // 例：await fetch(`${API_BASE}/api/todos/${todo.id}/complete`, { method: 'POST', credentials: 'include' });
+                        }}
+                      >
                         完了
                       </Button>
                     )}
